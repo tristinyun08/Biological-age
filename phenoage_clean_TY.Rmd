@@ -1,0 +1,526 @@
+---
+title: "NHANES Analysis"
+author: "Tristin Yun"
+output:
+  html_document: 
+    code_folding: hide
+    toc: true
+    toc_float: true
+    number_sections: true
+hitheme: tomorrow
+highlighter: highlight.js
+date: "Summer 2024"
+---
+[comment]: install phenoage from: https://github.com/dayoonkwon/BioAge 
+
+```{r setup,include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#install.packages("devtools"); devtools::install_github("dayoonkwon/BioAge");
+#install.packages("mediation"); #install.packages("broom");
+#install.packages("sas7bdat");install.packages("vtable"); install.packages("DiagrammeR")
+library(foreign); library(Hmisc);library(tidyverse)
+library(readr);library(corrplot);library(foreign);library(sas7bdat)
+library("mediation");library(naniar);library("DiagrammeR");library(vtable)
+library(cocor);library(summarytools)
+```
+
+# Data description
+Download CDC NHANES 2011-2014 data on demographics (DEMO) and cognitive function (CFQ) from University of Michigan dementia data set: https://www.openicpsr.org/openicpsr/project/151621/version/V1/view.
+Introduction video and dataset description: https://capra.med.umich.edu/nhanes.html.
+
+
+```{r download data,echo=FALSE}
+#data=read.sas7bdat("~/Dropbox/AD/NHANES/UM data/Data/2011_2014/nhanescog_2011_14_sas.sas7bdat")
+data=read.sas7bdat("~/Dropbox/AD/NHANES/UM data/Data/2011_2014/nhanescog_2011_14_sas.sas7bdat")
+```
+
+# Descriptive analysis
+```{r sumtable,eval=TRUE}
+#load("~/Dropbox/AD/NHANES/analysis/nhanes.RData")
+sumtable(data,group="year")
+```
+\newpage
+## Histograms of year 2011-2012 
+Age: RIDAGEYR; Cognitive measures: CFDDS - Digital Symbol Score, cerad_sum - Sum of Word Learning and Delayed Recall Score, CFDAST - Animal Fluency Score, race-adjusted z scores of Digital Symbol and global scores
+```{r hist,fig.align = 'center'}
+#Digital symbol, Sum of 4 CERAD (3 learning + 1 recall), animal fluency; scores and age-adjusted scores
+scores<-data[data$year=="2011-2012",c("RIDAGEYR","CFDDS","cerad_sum","CFDAST","z_digit_re", "z_global_re")]
+hist(scores, main="Histogram of year 2011-2012")
+```
+
+## Histograms of year 2013-2014 
+```{r hist2,fig.align = 'center'}
+scores<-data[data$year=="2013-2014",c("RIDAGEYR","CFDDS","cerad_sum","CFDAST","z_digit_re", "z_global_re")]
+hist.data.frame(scores, main="Histogram of years 2013-2014")
+```
+
+\newpage
+# Regression analysis of DS and age
+## Regression and scatterplot 
+```{r regression,fig.height=4,fig.width=6,fig.align = 'center'}
+temp<-lm(data$CFDDS~data$RIDAGEYR)
+summary(temp)
+print(paste("Sample size is: n=", nobs(temp)))
+plot(data$RIDAGEYR,data$CFDDS,xlab="Age", ylab="Digital Symbol Scores",main=
+"Association Between Age and Digital Symbol Scores",xlim=c(60,80))
+abline(temp)
+```
+
+## Interpretation and p-value 
+As age increases, your score on the Digital Symbol Test decreases. With every 
+one year increase in age, your score decreases by roughly 0.732 points. The
+p-value of <0.001 indicates a very significant association. However, the
+r-squared value of roughly 8.1% indicates there are other variables at play in 
+addition to age.
+
+# Construct biological age
+Biological age was compuated for NHANES (references:  https://www.ncbi.nlm.nih.gov/pmc/articles/PMC10460553/; https://link.springer.com/article/10.1007/s11357-021-00480-5) using R package "BioAge" (https://github.com/dayoonkwon/BioAge).
+
+It measures chronological age where one's predicted mortality risk (from biomarkers) is the same as a normal person in a reference population. For example, if a person's biologically predicted mortality is 0.1, and reference population reaches mortality at 0.1 at age 80, then the person's biological age is 80. If the person's actual chronogical age is only 70, then the person is at more advanced or older biological state. 
+```{r computebioage}
+#HD using NHANES (separate training for men and women)
+library(BioAge)
+hd = hd_nhanes(biomarkers=c("albumin","alp","lncrp","totchol","lncreat","hba1c","sbp","bun","uap","lymph","mcv","wbc"))
+
+#KDM bioage using NHANES (separate training for men and women)
+kdm = kdm_nhanes(biomarkers=c("albumin","alp","lncrp","totchol","lncreat","hba1c","sbp","bun","uap","lymph","mcv","wbc"))
+
+#phenoage using NHANES
+phenoage = phenoage_nhanes(biomarkers=c("albumin_gL","alp","lncrp","totchol","lncreat_umol","hba1c","sbp","bun","uap","lymph","mcv","wbc"))
+
+#assemble NHANES IV dataset with projected biological aging measures for analysis; from Github
+data_temp = merge(hd$data, kdm$data) %>% merge(., phenoage$data)
+
+##Discovery cohort: 2011; Validation cohort: 2013
+data1<-data_temp
+data2<-cbind(substr(data1$sampleID,6,10),data1)
+colnames(data2)[1]<-"SEQN"
+
+train = phenoage_calc(NHANES3,
+                      biomarkers = c("albumin_gL","lymph","mcv","glucose_mmol",
+                      "rdw","creat_umol","lncrp","alp","wbc"))
+
+phenoage = phenoage_calc(data2,
+                         biomarkers = c("albumin_gL","lymph","mcv","glucose_mmol",
+                         "rdw","creat_umol","alp","wbc"),
+                         fit = train$fit)
+bioage<-c("phenoage","phenoage_advance","kdm","kdm_advance","hd","hd_log")
+chronic<-c("sbp","bmi")
+data_use<-data
+data_temp1<-merge(data_use,phenoage$data[,c("SEQN",bioage,chronic,"income_recode","grip_scaled","fev_1000")],by="SEQN")
+data3<-data_temp1[data_temp1$edu_cat!="NaN",] #remove a few missing edu
+data3$edu_cat1<-as.numeric(data3$edu_cat>2) ##combine education categories
+data3$race2<-data3$race==2;data3$race3<-data3$race==3;data3$race4<-data3$race==4; #recode race variable
+data3$oldage<-as.numeric(data3$RIDAGEYR>=65) #63 is the 3rd quarile for age.
+data3$oldbioage<-as.numeric(data3$phenoage>=60) #60 is the 3rd quartile for bioage: Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's 
+  #5.625  30.252  45.080  46.115  60.386 109.968    1366 
+data3$bioadvance<-as.numeric(data3$phenoage_advance>=0)
+data3$income_recode1<-as.numeric(data3$income_recode>6) #35K or higher
+```
+
+## Biological age versus age
+```{r bioage,fig.align = 'center'}
+corrplot(cor(data3[,c("CFDDS","cerad_sum", "CFDAST","z_digit_re","z_digit_edu", "z_digit_age","RIDAGEYR","phenoage")],use="complete.obs"),method = 'number')
+
+cocor(~CFDDS + RIDAGEYR | CFDDS + phenoage, data = data3,
+      test = c("hittner2003", "zou2007"))
+
+##missing data patterns;
+#vis_miss(data3)
+#gg_miss_var(data3[data3$RIDAGEYR>59,],show_pct = T)
+plot(data3$RIDAGEYR,data3$phenoage,cex=0.2,xlab="Age",ylab="Phenoage")
+abline(lm(data3$phenoage~data3$RIDAGEYR))
+
+temp<-lm(data3$CFDDS~data3$RIDAGEYR)
+temp1<-lm(data3$CFDDS~data3$phenoage)
+
+summary(temp)
+summary(temp1)
+```
+
+## Merge with medical history
+```{r other medical history,echo=FALSE}
+#merge with medical history;
+bpq=merge(read.xport('~/Dropbox/AD/NHANES/CDCdata/2011_2012/BPQ_G.XPT'),read.xport('~/Dropbox/AD/NHANES/CDCdata/2013_2014/BPQ_H.XPT'),all=TRUE)
+cdq=merge(read.xport('~/Dropbox/AD/NHANES/CDCdata/2011_2012/CDQ_G.XPT'),read.xport('~/Dropbox/AD/NHANES/CDCdata/2013_2014/CDQ_H.XPT'),all=TRUE)
+t2d=merge(read.xport('~/Dropbox/AD/NHANES/CDCdata/2011_2012/DIQ_G.XPT'),read.xport('~/Dropbox/AD/NHANES/CDCdata/2013_2014/DIQ_H.XPT'),all=TRUE)
+smoking=merge(read.xport('~/Dropbox/AD/NHANES/CDCdata/2011_2012/SMQ_G.XPT'),read.xport('~/Dropbox/AD/NHANES/CDCdata/2013_2014/SMQ_H.XPT'),all=TRUE)
+drink=merge(read.xport('~/Dropbox/AD/NHANES/CDCdata/2011_2012/ALQ_G.XPT'),read.xport('~/Dropbox/AD/NHANES/CDCdata/2013_2014/ALQ_H.XPT'),all=TRUE)
+#data3_pre<-data3
+data3<-merge(data3,bpq,by='SEQN',all.x=T);
+data3<-merge(data3,cdq,by='SEQN',all.x=T);
+data3<-merge(data3,t2d,by='SEQN',all.x=T);
+data3<-merge(data3,smoking,by='SEQN',all.x=T);
+data3<-merge(data3,drink,by='SEQN',all.x=T)
+```
+
+Correlation between Digital Symbol score and bioage is significantly greater than with age. 
+
+R-squared for age predicting digital symbol score is 0.084, R-squared for biological age is 0.11.
+
+# Mediation analysis of effect of sbp on cognitive scores (digital symbol)
+## Distribution of outcomes, risk factor, mediators and moderators in the mediation analysis (2011-2014 cohort): 
+
+- Outcomes: Digital symbol scores or global z-score
+- Risk factor: SBP
+- Mediator: biological age
+- Moderator: biological aging state. State=1: biological age>= chronological age (biologically older). State=0: biological age < chronological age (biologically younger). This is from reference: https://www.dropbox.com/scl/fi/dkz7ge6c5x2l6tykjshuk/biological-aging-diet.pdf?rlkey=ed73yxejlv1bw73o5ta1vewfq&dl=0
+- Confounders: sex, race, income, bmi (replace chronic conditions in WHICAP paper: https://www.dropbox.com/scl/fi/sc6u0119gdaqe478e5ake/WHICAP-cognitive-reserve-education-mediation.pdf?rlkey=qlo61h9pc1akibrlsdbds7qio&dl=0)
+
+```{r table1, echo=FALSE}
+data4<-data3[is.na(data3$sbp)==F&is.na(data3$z_global_re)==F&is.na(data3$WTMEC2YR)==F&is.na(data3$phenoage)==F&is.na(data3$income_recode)==F&is.na(data3$bmi)==F,]
+#sumtable(data4[,c("CFDDS", "z_global_re", "sbp", "phenoage","bmi", "RIDAGEYR")])
+hist(data4[,c("CFDDS", "z_global_re", "sbp", "phenoage","bmi", "RIDAGEYR")])
+#freq(data4$bioadvance); freq(data4$edu_cat1); freq(data4$income_recode1); freq(data4$female)
+
+data4$race1=data4$race==1
+data4$Female<-as.factor(data4$female)
+data4$edu_cat1<-as.factor(data4$edu_cat1); data4$income_recode1<-as.factor(data4$income_recode1); data4$bioadvance<-as.factor(data4$bioadvance)
+
+st(data4, vars=c("RIDAGEYR","Female","race1","race2","race3","race4","edu_cat1","income_recode1","sbp","phenoage","bioadvance","z_global_re","z_digit_re","z_animal_re","z_cerad_re","bmi"), group="year",labels=T,summ=c('mean(x)','sd(x)'),digits=3)
+
+st(data4, vars=c("RIDAGEYR","Female","race1","race2","race3","race4","edu_cat1","income_recode1","sbp","phenoage","bioadvance","z_global_re","z_digit_re","z_animal_re","z_cerad_re","bmi"),labels=T,summ=c('mean(x)','sd(x)'),digits=3)
+```
+
+
+
+## Biological age as the mediator
+
+Hypothesis: Health risk factor (hypertension) has an effect on cognitive score mediated through biological age.  
+
+Causal diagram. Mediation consists of three sets of regressions with $M$: mediator; $Y$: outcome; $A$: exposure; $C$: confounder
+
+The indirect effect (mediation effect) is the product of paths $b$*$c$. Direct effect is the path $a$. Total effect is direct+indirect.
+
+Mediation analysis package: https://cran.r-project.org/web/packages/mediation/vignettes/mediation.pdf
+
+<center>
+```{r diagram,fig.height=3.5,fig.width=5,fig.align = 'center'}
+DiagrammeR::grViz("
+digraph {
+  splines=line;
+  graph [ranksep = 0.2]
+  node [shape = plaintext]
+    A [label = 'Hypertension (A)', shape=box]
+    Y [label = 'Cognitive Function (Y)', shape=box]
+    M [label = 'Biological age (M)', shape = box]
+  edge [minlen = 4]
+    A->Y [xlabel= a]
+    A->M [xlabel= b]
+    M->Y [xlabel= c]
+  { rank = same; A; Y }
+}
+")
+```
+</center>
+
+Use weighted least squares regression. Use exam weights to adjust for survey sampling design to reflect the US population. 
+
+```{r mediation_phenoage,fig.align = 'center'}
+#outcome: CFDDS
+data4<-data3[is.na(data3$sbp)==F&is.na(data3$CFDDS)==F&is.na(data3$WTMEC2YR)==F,]
+model.m<-lm(phenoage~sbp+female+bmi+factor(income_recode1)+race2+race3+race4+edu_cat1, data=data4,weights=WTMEC2YR)
+model.y<-lm(CFDDS~sbp+phenoage+female+bmi+factor(income_recode1)+race2+race3+race4+edu_cat1, data=data4,weights=WTMEC2YR)
+
+set.seed(1234)
+out.1 <- mediate(model.m, model.y, sims = 1000, treat = "sbp",mediator = "phenoage",weights=data$WTMEC2YR)
+
+summary(model.m);summary(model.y);summary(out.1)
+plot(out.1,xlim=c(-0.12,0))
+
+sens0 <- medsens(out.1, rho.by = 0.1)
+plot(sens0)
+summary(sens0)
+```
+
+### Analysis Results
+Biological age is a significant mediator because 58% of sbp's effect is mediated
+through biological age. The mediation effect is 0.055 (95% CI: -0.0685, -0.04) with
+a p-value of less than 0.001. 
+
+## Moderated mediation analysis by the state of biological aging. Biologically older (bioage>=age) versus biologically younger (bioage<age)
+
+```{r bioold,fig.align = 'center'}
+data4<-data3[is.na(data3$sbp)==F&is.na(data3$CFDDS)==F&is.na(data3$WTMEC2YR)==F,]
+moderator<-data4$bioadvance
+model.m0<-lm(phenoage~sbp*moderator+female+bmi+factor(income_recode1)+race2+race3+race4, data=data4,weights=WTMEC2YR)
+model.y0<-lm(CFDDS~phenoage+sbp*moderator+phenoage*moderator+female+bmi+factor(income_recode1)+race2+race3+race4, data=data4,weights=WTMEC2YR)
+
+set.seed(1234)
+out.edu0 <- mediate(model.m0, model.y0, sims = 1000, treat = "sbp",mediator = "phenoage",covariates = list(moderator = 0), weights=data4$WTMEC2YR)
+set.seed(1234)
+out.edu1 <- mediate(model.m0, model.y0, sims = 1000, treat = "sbp",mediator = "phenoage",covariates = list(moderator = 1), weights=data4$WTMEC2YR)
+
+print("Biologically younger (bioage<age)"); summary(out.edu0)
+print("Biologically older (bioage>=age)"); summary(out.edu1)
+
+#sens0 <- medsens(out.edu0, rho.by = 0.1)
+#plot(sens0)
+#summary(sens0)
+
+par(mfrow=c(1,2))
+plot(out.edu0,main="Biologically Younger",xlim=c(-0.15,0.05))
+plot(out.edu1,main="Biologically Older",xlim=c(-0.15,0.05))
+
+#test whether mediation effect is different
+
+set.seed(1234)
+med.init <- mediate(model.m0, model.y0, treat = "sbp", mediator = "phenoage", sims=2)
+test.modmed(med.init, covariates.1 = list(moderator = 1),                      covariates.2 = list(moderator = 0), sims = 1000)
+```
+
+
+### Interpreation and summary of moderated mediation analysis:
+When a subject is biologically younger (biological age<age), the effect of sbp is 
+more strongly mediated through biological age compared to when a subject is biologically
+older (biological age>age). This implies that when a subject is biologically older,
+there are other potential pathways where sbp affects cognitive score.
+
+## Education as potential mediator
+There might be two issues: 1. education was measured before SBP and cognition; 2. weights are not fitted correctly in the logistic regression when education is the categorical outcome. 
+```{r mediation_edu,fig.align = 'center'}
+#mediator: education. Two issues: education measured before sbp. Also, cannot include weights. 
+
+model.m<-glm(factor(edu_cat1)~sbp+female+bmi+factor(income_recode1)+race2+race3+race4,family = binomial(link = "logit"), data=data4)
+#model.m<-polr(factor(edu_cat)~sbp+female+bmi+factor(income_recode)+race2+race3+race4, method= "logistic", data=data4, Hess=T) #cannot include weights
+#model.m<-lm(edu_cat1~sbp+female+bmi+factor(income_recode)+race2+race3+race4, data=data4,weights=WTMEC2YR)
+model.y<-lm(CFDDS~sbp+edu_cat1+female+bmi+factor(income_recode1)+race2+race3+race4, data=data4)
+
+set.seed(1234)
+out.2 <- mediate(model.m, model.y, sims = 1000, treat = "sbp",mediator = "edu_cat1")
+
+summary(model.m);summary(model.y);summary(out.2)
+plot(out.2)
+```
+
+########################
+# Global cognition z-score as the outcome, history of hypertension as exposure, Phenoage as mediator
+
+Race adjusted global cognition z-score was created as the sum of the z-scores for the following: Sum of the CERAD scores (Trial 1 Recall, Trial 2 Recall, Trial 3 Recall, and Delayed Recall), Animal Fluency, and Digit Symbol. Exposure updated to 'History of hypertension'. Adjusted for confounders: sex, race, education, BMI, history of chest pain (cardiovascular health), history of T2D, ever smoking.
+
+## Analysis Results
+```{r mediation_global,fig.align = 'center'}
+#outcome: z score global
+library(broom)
+data4<-data3[is.na(data3$BPQ020)==F&data3$BPQ020!=9&data3$CDQ001!=9&data3$DIQ010!=9&data3$SMQ020!=9&is.na(data3$z_global_re)==F&is.na(data3$phenoage)==F&is.na(data3$WTMEC2YR)==F&is.na(data3$female)==F&is.na(data3$income_recode1)==F&is.na(data3$race2)==F&is.na(data3$edu_cat1)==F&is.na(data3$race3)==F&is.na(data3$race4)==F&is.na(data3$bmi)==F,]
+data4$hbp<-data4$BPQ020; 
+data4[data4$BPQ020==1,'hbp']<-1;data4[data4$BPQ020==2,'hbp']<-0
+data4<- data4 %>% 
+  rename(
+    "Chest_Pain"="CDQ001","T2D"="DIQ010","Smoking"="SMQ020"
+  )
+data4<-mutate(data4,Chest_Pain = recode(Chest_Pain, "1"="Yes", "2"="No"))
+data4<-mutate(data4,T2D = recode(T2D, "1"="Yes", "3"="Borderline", "2"="No"));data4$T2D <- relevel(factor(data4$T2D), ref = "No")
+data4<-mutate(data4, Smoking= recode(Smoking, "1"="Yes", "2"="No"))
+data4<-data4[is.na(data4$Chest_Pain)==F&is.na(data4$Smoking)==F&is.na(data4$T2D)==F,]
+#temp<-data4[,c("hbp","female","bmi","income_recode1","race2","race3","race4","edu_cat1","Chest_Pain",              "T2D","Smoking","phenoage","z_global_re","WTMEC2YR")]
+
+model.total<-lm(z_global_re~hbp+female+bmi+factor(income_recode1)+race2+race3+race4+edu_cat1+factor(Chest_Pain)+factor(T2D)+factor(Smoking), data=data4,weights=WTMEC2YR)
+model.m<-lm(phenoage~hbp+female+bmi+factor(income_recode1)+race2+race3+race4+edu_cat1+factor(Chest_Pain)+factor(T2D)+factor(Smoking), 
+            data=data4,weights=WTMEC2YR)
+model.y<-lm(z_global_re~hbp+phenoage+female+bmi+factor(income_recode1)+race2+race3+race4+edu_cat1+factor(Chest_Pain)+factor(T2D)+factor(Smoking), data=data4,weights=WTMEC2YR)
+
+write.csv(file="results csv/lm_mediation_0.csv", cbind(tidy(model.m)[,1],round(tidy(model.m)[,2:5],3), round(confint(model.m),3)))
+write.csv(file="results csv/lm_outcome_0.csv", cbind(tidy(model.y)[,1],round(tidy(model.y)[,2:5],3), round(confint(model.y),3)))
+write.csv(file="results csv/lm_total_0.csv", cbind(tidy(model.total)[,1],round(tidy(model.total)[,2:5],3), round(confint(model.total),3)))
+
+set.seed(1234)
+out.2 <- mediate(model.m, model.y, sims = 1000, treat = "hbp",mediator = "phenoage",weights=data$WTMEC2YR)
+summary(model.total);summary(model.m);summary(model.y);summary(out.2)
+sens0 <- medsens(out.2, rho.by = 0.1)
+
+par(mfrow=c(1,2))
+plot(out.2,xlim=c(-0.8,0))
+plot(sens0)
+summary(sens0)
+
+##extract results;
+extract_mediation_summary <- function (x) { 
+
+  clp <- 100 * x$conf.level
+  isLinear.y <- ((class(x$model.y)[1] %in% c("lm", "rq")) || 
+                   (inherits(x$model.y, "glm") && x$model.y$family$family == 
+                      "gaussian" && x$model.y$family$link == "identity") || 
+                   (inherits(x$model.y, "survreg") && x$model.y$dist == 
+                      "gaussian"))
+
+  printone <- !x$INT && isLinear.y
+
+  if (printone) {
+
+    smat <- c(x$d1, x$d1.ci, x$d1.p)
+    smat <- rbind(smat, c(x$z0, x$z0.ci, x$z0.p))
+    smat <- rbind(smat, c(x$tau.coef, x$tau.ci, x$tau.p))
+    smat <- rbind(smat, c(x$n0, x$n0.ci, x$n0.p))
+
+    rownames(smat) <- c("ACME", "ADE", "Total Effect", "Prop. Mediated")
+
+  } else {
+    smat <- c(x$d0, x$d0.ci, x$d0.p)
+    smat <- rbind(smat, c(x$d1, x$d1.ci, x$d1.p))
+    smat <- rbind(smat, c(x$z0, x$z0.ci, x$z0.p))
+    smat <- rbind(smat, c(x$z1, x$z1.ci, x$z1.p))
+    smat <- rbind(smat, c(x$tau.coef, x$tau.ci, x$tau.p))
+    smat <- rbind(smat, c(x$n0, x$n0.ci, x$n0.p))
+    smat <- rbind(smat, c(x$n1, x$n1.ci, x$n1.p))
+    smat <- rbind(smat, c(x$d.avg, x$d.avg.ci, x$d.avg.p))
+    smat <- rbind(smat, c(x$z.avg, x$z.avg.ci, x$z.avg.p))
+    smat <- rbind(smat, c(x$n.avg, x$n.avg.ci, x$n.avg.p))
+
+    rownames(smat) <- c("ACME (control)", "ACME (treated)", 
+                        "ADE (control)", "ADE (treated)", "Total Effect", 
+                        "Prop. Mediated (control)", "Prop. Mediated (treated)", 
+                        "ACME (average)", "ADE (average)", "Prop. Mediated (average)")
+
+  }
+
+  colnames(smat) <- c("Estimate", paste(clp, "% CI Lower", sep = ""), 
+                      paste(clp, "% CI Upper", sep = ""), "p-value")
+  smat
+}
+
+write.csv(extract_mediation_summary(out.2),file="results csv/med_main.csv")
+```
+
+##Baseline summary statistics for paper:
+```{r table1 for paper,echo=FALSE}
+data4$hyper=as.factor(data4$hbp)
+data4$race1=data4$race==1; data4$Female=as.factor(data4$female)
+data4$edu_cat1<-as.factor(data4$edu_cat1); data4$income_recode1<-as.factor(data4$income_recode1); data4$bioadvance<-as.factor(data4$bioadvance)
+
+st(data4, vars=c("RIDAGEYR","Female","race1","race2","race3","race4","edu_cat1","income_recode1","sbp","phenoage","bioadvance","z_global_re","z_digit_re","z_animal_re","z_cerad_re","bmi","hyper","T2D","Chest_Pain","Smoking"), group="year",labels=T,summ=c('mean(x)','sd(x)'),digits=3,file="results csv/table1_by_year.csv",out="csv")
+
+st(data4, vars=c("RIDAGEYR","Female","race1","race2","race3","race4","edu_cat1","income_recode1","sbp","phenoage","bioadvance","z_global_re","z_digit_re","z_animal_re","z_cerad_re","bmi","hyper","T2D","Chest_Pain","Smoking"),labels=T,summ=c('mean(x)','sd(x)'),digits=3,file="results csv/table1_all.csv",out="csv")
+
+```
+
+## Moderated mediation analysis by biologically old (bioage>=age) versus biologically young (bioage<age) 
+
+```{r bioold1,fig.align = 'center'}
+moderator<-data4$bioadvance
+model.m0<-lm(phenoage~hbp*moderator+female+bmi+factor(income_recode1)+edu_cat1+factor(Chest_Pain)+factor(T2D)+factor(Smoking), 
+             data=data4,weights=WTMEC2YR)
+model.y0<-lm(z_global_re~phenoage+hbp*moderator+phenoage*moderator+female+bmi+factor(income_recode1)+edu_cat1+factor(Chest_Pain)+factor(T2D)+factor(Smoking), 
+             data=data4,weights=WTMEC2YR)
+
+set.seed(1234)
+out.edu0 <- mediate(model.m0, model.y0, sims = 1000, treat = "hbp",mediator = "phenoage",covariates = list(moderator = 0), weights=data4$WTMEC2YR)
+set.seed(1234)
+out.edu1 <- mediate(model.m0, model.y0, sims = 1000, treat = "hbp",mediator = "phenoage",covariates = list(moderator = 1), weights=data4$WTMEC2YR)
+
+print("Delayed Biological Aging (bioage<age)"); summary(out.edu0)
+print("Accelerated Biological Aging (bioage>=age)"); summary(out.edu1)
+
+par(mfrow=c(1,2))
+plot(out.edu0,main="Delayed Biological Aging",xlim=c(-0.8,0.3))
+plot(out.edu1,main="Accelerated Biological Aging",xlim=c(-0.8,0.3))
+write.csv(extract_mediation_summary(out.edu0),file="results csv/med_delayed.csv")
+write.csv(extract_mediation_summary(out.edu1),file="results csv/med_accl.csv")
+
+set.seed(1234)
+med.init <- mediate(model.m0, model.y0, treat = "hbp", mediator = "phenoage", sims=2)
+test.modmed(med.init, covariates.1 = list(moderator = 1),                      covariates.2 = list(moderator = 0), sims = 1000)
+```
+
+########################################################
+###not to consider the rest. only exploratory.
+# Phenoage as exposure and sbp as mediator
+
+```{r mediator_pheno,fig.align = 'center',eval=F}
+#outcome: z score global
+library(broom)
+data4<-data3[is.na(data3$sbp)==F&is.na(data3$z_global_re)==F&is.na(data3$WTMEC2YR)==F,]
+data4$sbp1<-data4$sbp/sd(data4$sbp)
+
+model.total<-lm(z_global_re~phenoage+female+income_recode1+edu_cat1+bmi, data=data4,weights=WTMEC2YR)
+model.m<-lm(sbp~phenoage+female+income_recode1+edu_cat1+bmi, data=data4,weights=WTMEC2YR)
+model.y<-lm(z_global_re~sbp+phenoage+female+income_recode1+edu_cat1+bmi, data=data4,weights=WTMEC2YR)
+
+set.seed(1234)
+out.2 <- mediate(model.m, model.y, sims = 1000, treat = "phenoage",mediator = "sbp",weights=data$WTMEC2YR)
+
+summary(model.total);summary(model.m);summary(model.y);summary(out.2)
+
+plot(out.2,xlim=c(-0.13,0))
+
+sens0 <- medsens(out.2, rho.by = 0.1)
+plot(sens0)
+summary(sens0)
+```
+
+<!-- # Education as exposure, Phenoage as mediator, cognition as outcome -->
+```{r education,eval=F}
+model.total<-lm(z_global_re~edu_cat1+sbp1+female+income_recode1+bmi, data=data4,weights=WTMEC2YR)
+model.m<-lm(phenoage~edu_cat1+sbp1+female+income_recode1+bmi, data=data4,weights=WTMEC2YR)
+model.y<-lm(z_global_re~edu_cat1+phenoage+sbp1+female+income_recode1+bmi, data=data4,weights=WTMEC2YR)
+
+set.seed(1234)
+out.2 <- mediate(model.m, model.y, sims = 1000, treat = "edu_cat1",mediator = "phenoage",weights=data4$WTMEC2YR)
+
+summary(model.total);summary(model.m);summary(model.y);summary(out.2)
+plot(out.2,xlim=c(0,2))
+
+sens0 <- medsens(out.2, rho.by = 0.1)
+plot(sens0)
+summary(sens0)
+```
+
+<!-- ## Moderated mediation analysis by biologically old (bioage>=age) versus biologically young (bioage<age) -->
+
+```{r edu moderation,fig.align = 'center',eval=FALSE}
+moderator<-data4$bioadvance
+model.m0<-lm(phenoage~edu_cat1*moderator+sbp1+female+bmi+factor(income_recode1), data=data4,weights=WTMEC2YR)
+model.y0<-lm(z_global_re~phenoage+edu_cat1*moderator+phenoage*moderator+sbp1+female+bmi+factor(income_recode1), data=data4,weights=WTMEC2YR)
+
+set.seed(1234)
+out.edu0 <- mediate(model.m0, model.y0, sims = 1000, treat = "edu_cat1",mediator = "phenoage",covariates = list(moderator = 0), weights=data4$WTMEC2YR)
+set.seed(1234)
+out.edu1 <- mediate(model.m0, model.y0, sims = 1000, treat = "edu_cat1",mediator = "phenoage",covariates = list(moderator = 1), weights=data4$WTMEC2YR)
+
+print("Delayed Biological Aging (bioage<age)"); summary(out.edu0)
+print("Accelerated Biological Aging (bioage>=age)"); summary(out.edu1)
+
+par(mfrow=c(1,2))
+plot(out.edu1,main="Accelerated Biological Aging",xlim=c(0,2))
+plot(out.edu0,main="Delayed Biological Aging",xlim=c(0,2))
+
+#sens0 <- medsens(out.edu0, rho.by = 0.1)
+#plot(sens0); summary(sens0)
+
+#sens1 <- medsens(out.edu1, rho.by = 0.1)
+#plot(sens1); #summary(sens1)
+
+#test whether mediation effect is different
+set.seed(1234)
+med.init <- mediate(model.m0, model.y0, treat = "edu_cat1", mediator = "phenoage", sims=2)
+test.modmed(med.init, covariates.1 = list(moderator = 1),                      covariates.2 = list(moderator = 0), sims = 1000)
+```
+
+
+```{r education stratified,eval=FALSE}
+# education as exposure, stratified, similar
+data5_1<-data4[data4$bioadvance==1,]
+model.total<-lm(z_global_re~edu_cat1+sbp1+female+income_recode1+bmi, data=data5_1,weights=WTMEC2YR)
+model.m<-lm(phenoage~edu_cat1+sbp1+female+income_recode1+bmi, data=data5_1,weights=WTMEC2YR)
+model.y<-lm(z_global_re~edu_cat1+phenoage+sbp1+female+income_recode1+bmi, data=data5_1,weights=WTMEC2YR)
+
+set.seed(1234)
+out.2 <- mediate(model.m, model.y, sims = 1000, treat = "edu_cat1",mediator = "phenoage",weights=data5_1$WTMEC2YR)
+
+summary(model.total);summary(model.m);summary(model.y);summary(out.2)
+
+
+data5_2<-data4[data4$bioadvance==0,]
+model.total<-lm(z_global_re~edu_cat1+sbp1+female+income_recode1+bmi, data=data5_2,weights=WTMEC2YR)
+model.m<-lm(phenoage~edu_cat1+sbp1+female+income_recode1+bmi, data=data5_2,weights=WTMEC2YR)
+model.y<-lm(z_global_re~edu_cat1+phenoage+sbp1+female+income_recode1+bmi, data=data5_2,weights=WTMEC2YR)
+
+set.seed(1234)
+out.3 <- mediate(model.m, model.y, sims = 1000, treat = "edu_cat1",mediator = "phenoage",weights=data5_2$WTMEC2YR)
+
+summary(model.total);summary(model.m);summary(model.y);summary(out.3)
+
+par(mfrow=c(1,2))
+plot(out.2,main="Accelerated Biological Aging",xlim=c(0,2));plot(out.3,main="Delayed Biological Aging",xlim=c(0,2))
+
+```
